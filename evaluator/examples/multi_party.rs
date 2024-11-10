@@ -2,10 +2,7 @@ use core::{array::from_fn, iter::repeat_with};
 use itertools::{izip, Itertools};
 use phantom_zone_evaluator::boolean::{
     dev::MockBoolEvaluator,
-    fhew::{
-        param::{I_4P, I_4P_60},
-        prelude::*,
-    },
+    fhew::{param::I_4P_40, prelude::*},
 };
 use pz::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
@@ -823,6 +820,8 @@ fn e2e<O: Ops>(param: Param) {
             .collect_vec()
     );
 
+    println!("Size: {:?}", bs_key_shares[0].len());
+
     timed!(
         "server: aggregate bootstrapping key shares",
         server.aggregate_bs_key_shares(
@@ -991,19 +990,19 @@ fn e2e<O: Ops>(param: Param) {
 
 fn main() {
     e2e::<NativeOps>(Param {
-        param: I_4P_60,
+        param: I_4P_40,
         ring_packing_modulus: Some(Modulus::Prime(2305843009213554689)),
         ring_packing_auto_decomposition_param: DecompositionParam {
             log_base: 20,
             level: 1,
         },
     });
-    e2e::<PrimeOps>(Param {
-        param: I_4P,
-        ring_packing_modulus: None,
-        ring_packing_auto_decomposition_param: DecompositionParam {
-            log_base: 20,
-            level: 1,
-        },
-    });
+    // e2e::<PrimeOps>(Param {
+    //     param: I_4P,
+    //     ring_packing_modulus: None,
+    //     ring_packing_auto_decomposition_param: DecompositionParam {
+    //         log_base: 20,
+    //         level: 1,
+    //     },
+    // });
 }
