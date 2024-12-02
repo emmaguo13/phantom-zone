@@ -30,7 +30,7 @@ mod test {
     use crate::{
         distribution::Sampler,
         modulus::{Native, NonNativePowerOfTwo},
-        ntt::ffnt::test::{poly_mul_prec_loss, round_trip_prec_loss},
+        dft::ffnt::test::{poly_mul_prec_loss, round_trip_prec_loss},
         ring::{
             power_of_two::noisy::{NoisyNativeRing, NoisyNonNativePowerOfTwoRing},
             test::{test_poly_mul, test_round_trip},

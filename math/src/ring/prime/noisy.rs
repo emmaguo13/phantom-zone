@@ -1,6 +1,6 @@
 use crate::{
     modulus::{ElemFrom, Modulus},
-    ntt::ffnt::Ffnt,
+    dft::ffnt::Ffnt,
     ring::{prime, RingOps},
 };
 use num_complex::Complex64;
@@ -121,7 +121,7 @@ mod test {
     use crate::{
         distribution::Sampler,
         modulus::Prime,
-        ntt::ffnt::test::{poly_mul_prec_loss, round_trip_prec_loss},
+        dft::ffnt::test::{poly_mul_prec_loss, round_trip_prec_loss},
         ring::{
             prime::noisy::NoisyPrimeRing,
             test::{test_poly_mul, test_round_trip},

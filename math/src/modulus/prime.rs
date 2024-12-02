@@ -1,13 +1,11 @@
 use crate::{
-    decomposer::PrimeDecomposer,
-    distribution::{DistributionSized, Sampler},
-    modulus::{shoup::Shoup, ElemFrom, ElemOps, ElemTo, Modulus, ModulusOps},
+    distribution::{Sampler},
+    modulus::{ElemFrom, ElemOps, ElemTo, Modulus, ModulusOps},
 };
 use primality_test::is_prime;
 use core::ops::Deref;
 use num_bigint_dig::BigUint;
 use num_traits::ToPrimitive;
-use rand::distributions::{Distribution, Uniform};
 use prime_factorization::Factorization;
 
 /// A `ModulusOps` implementation that supports small prime modulus (less than
@@ -187,93 +185,7 @@ impl ElemOps for Prime {
     type Elem = u64;
 }
 
-impl ModulusOps for Prime {
-    type ElemPrep = Shoup;
-    type Decomposer = PrimeDecomposer;
 
-    fn new(modulus: Modulus) -> Self {
-        modulus.try_into().unwrap()
-    }
-
-    #[inline(always)]
-    fn modulus(&self) -> Modulus {
-        (*self).into()
-    }
-
-    #[inline(always)]
-    fn uniform_distribution(
-        &self,
-    ) -> impl Distribution<Self::Elem> + DistributionSized<Self::Elem> {
-        Uniform::new_inclusive(0, self.max())
-    }
-
-    #[inline(always)]
-    fn zero(&self) -> Self::Elem {
-        0
-    }
-
-    #[inline(always)]
-    fn one(&self) -> Self::Elem {
-        1
-    }
-
-    #[inline(always)]
-    fn neg_one(&self) -> Self::Elem {
-        self.max()
-    }
-
-    #[inline(always)]
-    fn neg(&self, a: &Self::Elem) -> Self::Elem {
-        debug_assert!(*a < self.q);
-        if *a != 0 {
-            self.q - a
-        } else {
-            0
-        }
-    }
-
-    #[inline(always)]
-    fn add(&self, a: &Self::Elem, b: &Self::Elem) -> Self::Elem {
-        debug_assert!(*a < self.q);
-        debug_assert!(*b < self.q);
-        let mut c = a + b;
-        self.reduce_once_assign(&mut c);
-        c
-    }
-
-    #[inline(always)]
-    fn sub(&self, a: &Self::Elem, b: &Self::Elem) -> Self::Elem {
-        debug_assert!(*a < self.q);
-        debug_assert!(*b < self.q);
-        if a >= b {
-            a - b
-        } else {
-            self.q + a - b
-        }
-    }
-
-    #[inline(always)]
-    fn mul(&self, a: &Self::Elem, b: &Self::Elem) -> Self::Elem {
-        debug_assert!(*a < self.q << 1);
-        debug_assert!(*b < self.q << 1);
-
-        self.reduce_u128(*a as u128 * *b as u128)
-    }
-
-    fn inv(&self, a: &Self::Elem) -> Option<Self::Elem> {
-        (*a != 0).then(|| self.pow(*a, self.q - 2))
-    }
-
-    #[inline(always)]
-    fn prepare(&self, a: &Self::Elem) -> Self::ElemPrep {
-        Shoup::new(*a, self.q)
-    }
-
-    #[inline(always)]
-    fn mul_prep(&self, a: &Self::Elem, b: &Self::ElemPrep) -> Self::Elem {
-        b.mul(*a, self.q)
-    }
-}
 
 impl ElemFrom<u64> for Prime {
     #[inline(always)]
