@@ -10,6 +10,8 @@ missing_debug_implementations = "forbid"
 broken_intra_doc_links = "forbid"
 
 [dependencies]
+prime_factorization = { workspace = true}
+primality-test = { workspace = true }
 itertools = { workspace = true }
 num-bigint-dig = { workspace = true }
 num-complex = { workspace = true }

@@ -1,7 +1,7 @@
 use crate::{
     izip_eq,
-    modulus::{prime::Shoup, ElemFrom, Modulus, ModulusOps},
-    poly::ntt::Ntt,
+    modulus::{shoup::Shoup, ElemFrom, Modulus, ModulusOps},
+    ntt::ntt::Ntt,
     ring::{prime, RingOps},
 };
 

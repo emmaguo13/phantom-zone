@@ -1,12 +1,14 @@
 use crate::{
     decomposer::PrimeDecomposer,
     distribution::{DistributionSized, Sampler},
-    modulus::{ElemFrom, ElemOps, ElemTo, Modulus, ModulusOps},
+    modulus::{shoup::Shoup, ElemFrom, ElemOps, ElemTo, Modulus, ModulusOps},
 };
+use primality_test::is_prime;
 use core::ops::Deref;
 use num_bigint_dig::BigUint;
 use num_traits::ToPrimitive;
 use rand::distributions::{Distribution, Uniform};
+use prime_factorization::Factorization;
 
 /// A `ModulusOps` implementation that supports small prime modulus (less than
 /// `1 << 61`) .
@@ -19,22 +21,48 @@ pub struct Prime {
     log_q: usize,
     barrett_mu: u128,
     barrett_alpha: usize,
+    montgomery: u64,
+}
+
+fn get_distinct_factors(q: u64) -> Vec<u64> {
+    let factors = Factorization::run(q).prime_factor_repr();
+    let mut distincts_factors: Vec<u64> = Vec::with_capacity(factors.len());
+    for factor in factors.iter(){
+        distincts_factors.push(factor.0)
+    }
+    distincts_factors
 }
 
 impl Prime {
-    pub const fn new(q: u64) -> Self {
-        assert!(q > 2);
+    pub fn new(q: u64) -> Self {
+        assert!(is_prime(q) && q > 2);
+        Self::new_unchecked(q)
+    }
+
+    pub fn new_unchecked(q: u64) -> Self {
         assert!(q.next_power_of_two().ilog2() <= 61);
         let log_q = q.next_power_of_two().ilog2() as usize;
         let barrett_mu = (1u128 << (log_q * 2 + 3)) / (q as u128);
         let barrett_alpha = log_q + 3;
+        let mut montgomery: u64 = 1;
+        let mut q_pow = q;
+        for _i in 0..63{
+            montgomery = montgomery.wrapping_mul(q_pow);
+            q_pow = q_pow.wrapping_mul(q_pow);
+        }
         Self {
             q,
             q_half: q >> 1,
             log_q,
             barrett_mu,
             barrett_alpha,
+            montgomery,
         }
+    }
+
+    #[inline(always)]
+    pub fn q(&self) -> u64{
+        self.q
     }
 
     #[inline(always)]
@@ -332,36 +360,3 @@ impl TryFrom<Modulus> for Prime {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Shoup(u64, u64);
-
-impl Shoup {
-    #[inline(always)]
-    pub fn new(v: u64, q: u64) -> Self {
-        debug_assert!(v < q);
-        let quotient = (((v as u128) << 64) / q as u128) as _;
-        Self(v, quotient)
-    }
-
-    #[inline(always)]
-    pub fn value(&self) -> u64 {
-        self.0
-    }
-
-    #[inline(always)]
-    pub fn quotient(&self) -> u64 {
-        self.1
-    }
-
-    #[inline(always)]
-    pub fn mul(&self, a: u64, q: u64) -> u64 {
-        let t = ((self.quotient() as u128 * a as u128) >> 64) as _;
-        (a.wrapping_mul(self.value())).wrapping_sub(q.wrapping_mul(t))
-    }
-}
-
-#[cfg(any(test, feature = "dev"))]
-pub(crate) fn is_prime(q: u64) -> bool {
-    num_bigint_dig::prime::probably_prime(&(q).into(), 20)
-}

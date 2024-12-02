@@ -1,7 +1,6 @@
 pub mod automorphism;
-pub mod ffnt;
 pub mod karatsuba;
-pub mod ntt;
+
 
 #[cfg(test)]
 pub(crate) mod test {

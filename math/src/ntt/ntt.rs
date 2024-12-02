@@ -1,5 +1,5 @@
 use crate::{
-    modulus::{prime::Shoup, ModulusOps, Prime},
+    modulus::{shoup::Shoup, ModulusOps, Prime},
     util::{as_slice::AsMutSlice, bit_reverse},
 };
 use core::fmt::{self, Debug};

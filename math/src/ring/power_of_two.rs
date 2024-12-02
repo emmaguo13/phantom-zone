@@ -4,7 +4,7 @@ use crate::{
         power_of_two::{f64_mod_u64, PowerOfTwo},
         ElemFrom, ElemOps, ElemTo, Modulus, ModulusOps,
     },
-    poly::ffnt::Ffnt,
+    ntt::ffnt::Ffnt,
     ring::RingOps,
 };
 use core::fmt::Debug;

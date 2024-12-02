@@ -10,6 +10,8 @@ use rand_distr::Distribution;
 
 pub(crate) mod power_of_two;
 pub(crate) mod prime;
+pub(crate) mod shoup;
+pub(crate) mod prime_generator;
 
 pub use power_of_two::{Native, NonNativePowerOfTwo};
 pub use prime::Prime;
