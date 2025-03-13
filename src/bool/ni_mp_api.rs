@@ -86,10 +86,27 @@ pub fn gen_server_key_share(
     BoolParameters<u64>,
     NonInteractiveMultiPartyCrs<[u8; 32]>,
 > {
-    BoolEvaluator::with_local(|e| {
+    println!("[PERF] Starting gen_server_key_share for user_id={}, total_users={}", user_id, total_users);
+    let start_time = std::time::Instant::now();
+    
+    let result = BoolEvaluator::with_local(|e| {
+        println!("[PERF] Getting global CR seed");
+        let cr_seed_start = std::time::Instant::now();
         let cr_seed = NonInteractiveMultiPartyCrs::global();
-        e.gen_non_interactive_multi_party_key_share(cr_seed, user_id, total_users, client_key)
-    })
+        println!("[PERF] Got global CR seed in {:?}", cr_seed_start.elapsed());
+        
+        println!("[PERF] Starting key share generation");
+        let key_share_start = std::time::Instant::now();
+        
+        // Call the actual implementation with detailed logging inside
+        let result = e.gen_non_interactive_multi_party_key_share(cr_seed, user_id, total_users, client_key);
+        
+        println!("[PERF] Completed key share generation in {:?}", key_share_start.elapsed());
+        result
+    });
+    
+    println!("[PERF] Total gen_server_key_share execution time: {:?}", start_time.elapsed());
+    result
 }
 
 pub fn aggregate_server_key_shares(
@@ -103,10 +120,16 @@ pub fn aggregate_server_key_shares(
     NonInteractiveMultiPartyCrs<[u8; 32]>,
     BoolParameters<u64>,
 > {
-    BoolEvaluator::with_local(|e| {
+    println!("[PERF] Starting aggregate_server_key_shares");
+    let start_time = std::time::Instant::now();
+    
+    let result = BoolEvaluator::with_local(|e| {
         let cr_seed = NonInteractiveMultiPartyCrs::global();
         e.aggregate_non_interactive_multi_party_server_key_shares(cr_seed, shares)
-    })
+    });
+    
+    println!("[PERF] Total aggregate_server_key_shares execution time: {:?}", start_time.elapsed());
+    result
 }
 
 impl

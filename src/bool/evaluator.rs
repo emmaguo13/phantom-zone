@@ -1236,6 +1236,7 @@ where
         M: Clone + Debug,
         <M as Matrix>::R: RowMut + Clone,
     {
+        let aggregate_start = std::time::Instant::now();
         assert_eq!(
             self.parameters().variant(),
             &ParameterVariant::NonInteractiveMultiParty
@@ -1611,6 +1612,8 @@ where
             lwe_ksk
         };
 
+        println!("[PERF] Aggregating key shares {:?}", aggregate_start.elapsed());
+
         SeededNonInteractiveMultiPartyServerKey::new(
             uj_to_s_ksks,
             rgsw_cts,
@@ -1619,6 +1622,7 @@ where
             cr_seed.clone(),
             self.parameters().clone(),
         )
+
     }
 
     pub(super) fn gen_non_interactive_multi_party_key_share<
@@ -1634,11 +1638,14 @@ where
         BoolParameters<M::MatElement>,
         NonInteractiveMultiPartyCrs<[u8; 32]>,
     > {
+        println!("[PERF_DETAIL] Starting gen_non_interactive_multi_party_key_share implementation");
         assert_eq!(
             self.parameters().variant(),
             &ParameterVariant::NonInteractiveMultiParty
         );
 
+        let init_start = std::time::Instant::now();
+        println!("[PERF_DETAIL] Initializing parameters");
         // TODO:  check whether parameters support `total_users`
         let nttop = self.pbs_info().nttop_rlweq();
         let rlwe_modop = self.pbs_info().modop_rlweq();
@@ -1648,20 +1655,28 @@ where
         let sk_rlwe = client_key.sk_rlwe();
         let sk_u_rlwe = client_key.sk_u_rlwe();
         let sk_lwe = client_key.sk_lwe();
+        println!("[PERF_DETAIL] Parameters initialized in {:?}", init_start.elapsed());
 
+        println!("[PERF_DETAIL] Starting key switch generation");
+        let ksk_start = std::time::Instant::now();
         let (ui_to_s_ksk, ksk_zero_encs_for_others) = DefaultSecureRng::with_local_mut(|rng| {
             // ui_to_s_ksk
+            let decomposer_start = std::time::Instant::now();
             let non_interactive_decomposer = self
                 .parameters()
                 .non_interactive_ui_to_s_key_switch_decomposer::<DefaultDecomposer<M::MatElement>>(
                 );
             let non_interactive_gadget_vec = non_interactive_decomposer.gadget_vector();
+            println!("[PERF_DETAIL] Decomposer initialization took {:?}", decomposer_start.elapsed());
+            
             let ui_to_s_ksk = {
+                println!("[PERF_DETAIL] Starting ui_to_s_ksk generation");
+                let ui_ksk_start = std::time::Instant::now();
                 let mut p_rng = DefaultSecureRng::new_seeded(
                     cr_seed.ui_to_s_ks_seed_for_user_i::<DefaultSecureRng>(self_index),
                 );
 
-                non_interactive_ksk_gen::<M, _, _, _, _, _>(
+                let result = non_interactive_ksk_gen::<M, _, _, _, _, _>(
                     &sk_rlwe,
                     &sk_u_rlwe,
                     &non_interactive_gadget_vec,
@@ -1669,13 +1684,18 @@ where
                     rng,
                     nttop,
                     rlwe_modop,
-                )
+                );
+                println!("[PERF_DETAIL] ui_to_s_ksk generation took {:?}", ui_ksk_start.elapsed());
+                result
             };
 
             // zero encryptions for others uj_to_s ksk
+            println!("[PERF_DETAIL] Starting zero encryptions for other users");
+            let zero_enc_start = std::time::Instant::now();
             let all_users_except_self = (0..total_users).filter(|x| *x != self_index);
             let zero_encs_for_others = all_users_except_self
                 .map(|other_user_index| {
+                    let user_start = std::time::Instant::now();
                     let mut p_rng = DefaultSecureRng::new_seeded(
                         cr_seed.ui_to_s_ks_seed_for_user_i::<DefaultSecureRng>(other_user_index),
                     );
@@ -1688,14 +1708,19 @@ where
                             nttop,
                             rlwe_modop,
                         );
+                    println!("[PERF_DETAIL] Zero encryption for user {} took {:?}", other_user_index, user_start.elapsed());
                     zero_encs
                 })
                 .collect_vec();
+            println!("[PERF_DETAIL] All zero encryptions took {:?}", zero_enc_start.elapsed());
 
             (ui_to_s_ksk, zero_encs_for_others)
         });
+        println!("[PERF_DETAIL] Total key switch generation took {:?}", ksk_start.elapsed());
 
         // Non-interactive RGSW cts
+        println!("[PERF_DETAIL] Starting RGSW ciphertext generation");
+        let rgsw_start = std::time::Instant::now();
         let (ni_rgsw_zero_encs, self_leader_ni_rgsw_cts, not_self_leader_rgsw_cts) = {
             let rgsw_x_rgsw_decomposer = self
                 .parameters()
@@ -1726,9 +1751,12 @@ where
 
             // Zero encyptions for each LWE index. We generate d_a zero encryptions for each
             // LWE index using a_{i, l} with i \in {d_max - d_a , d_max) and l = lwe_index
+            println!("[PERF_DETAIL] Starting RGSW zero encryptions");
+            let zero_enc_start = std::time::Instant::now();
             let zero_encs = {
                 (0..self.parameters().lwe_n().0)
                     .map(|lwe_index| {
+                        let lwe_index_start = std::time::Instant::now();
                         let mut p_rng = DefaultSecureRng::new_seeded(
                             cr_seed.ni_rgsw_ct_seed_for_index::<DefaultSecureRng>(lwe_index),
                         );
@@ -1736,6 +1764,7 @@ where
                         let mut scratch = M::R::zeros(self.parameters().rlwe_n().0);
 
                         // puncture seeded prng d_max - d_a times
+                        let puncture_start = std::time::Instant::now();
                         (0..(d_max - d_rgsw_a)).into_iter().for_each(|_| {
                             RandomFillUniformInModulus::random_fill(
                                 &mut p_rng,
@@ -1743,8 +1772,10 @@ where
                                 scratch.as_mut(),
                             );
                         });
+                        println!("[PERF_DETAIL] Puncturing for lwe_index {} took {:?}", lwe_index, puncture_start.elapsed());
 
                         let mut zero_enc = M::zeros(d_rgsw_a, self.parameters().rlwe_n().0);
+                        let row_processing_start = std::time::Instant::now();
                         zero_enc.iter_rows_mut().for_each(|out| {
                             // sample a_i
                             RandomFillUniformInModulus::random_fill(
@@ -1769,11 +1800,14 @@ where
 
                             rlwe_modop.elwise_add_mut(out.as_mut(), scratch.as_ref());
                         });
+                        println!("[PERF_DETAIL] Row processing for lwe_index {} took {:?}", lwe_index, row_processing_start.elapsed());
 
+                        println!("[PERF_DETAIL] Zero encryption for lwe_index {} took {:?}", lwe_index, lwe_index_start.elapsed());
                         zero_enc
                     })
                     .collect_vec()
             };
+            println!("[PERF_DETAIL] All RGSW zero encryptions took {:?}", zero_enc_start.elapsed());
 
             let uj_poly_eval = {
                 let mut u = M::R::try_convert_from(&sk_u_rlwe, rlwe_q);
@@ -1795,6 +1829,8 @@ where
             // the indices user generates non-interactive RGWS cts for RGSW x
             // RGSW multiplication. We refer to such indices as where user is
             // not the leader.
+            println!("[PERF_DETAIL] Starting self-leader RGSW ciphertext generation");
+            let self_leader_start = std::time::Instant::now();
             let self_leader_ni_rgsw_cts = {
                 let max_rlwe_x_rgsw_decomposer =
                     if rlwe_x_rgsw_decomposer.a().decomposition_count().0
@@ -1806,15 +1842,18 @@ where
                     };
 
                 let gadget_vec = max_rlwe_x_rgsw_decomposer.gadget_vector();
+                println!("[PERF_DETAIL] Self-leader index range: {}..{}", self_start_index, self_end_index);
 
                 (self_start_index..self_end_index)
                     .map(|lwe_index| {
+                        let lwe_index_start = std::time::Instant::now();
                         let mut p_rng = DefaultSecureRng::new_seeded(
                             cr_seed.ni_rgsw_ct_seed_for_index::<DefaultSecureRng>(lwe_index),
                         );
 
                         // puncture p_rng d_max - d'_max time to align with `a_{i, l}`s used to
                         // produce RGSW cts for RGSW x RGSW
+                        let puncture_start = std::time::Instant::now();
                         let mut scratch = M::R::zeros(self.parameters().rlwe_n().0);
                         (0..(d_max - max_rlwe_x_rgsw_decomposer.decomposition_count().0))
                             .into_iter()
@@ -1825,6 +1864,7 @@ where
                                     scratch.as_mut(),
                                 );
                             });
+                        println!("[PERF_DETAIL] Self-leader puncturing for lwe_index {} took {:?}", lwe_index, puncture_start.elapsed());
 
                         let mut ni_rgsw_cts = M::zeros(
                             max_rlwe_x_rgsw_decomposer.decomposition_count().0,
@@ -1832,13 +1872,16 @@ where
                         );
 
                         // X^{s_{j, lwe}[l]}
+                        let m_poly_start = std::time::Instant::now();
                         let m_poly = encode_x_pow_si_with_emebedding_factor::<M::R, _>(
                             sk_lwe[lwe_index],
                             self.pbs_info().embedding_factor(),
                             self.parameters().rlwe_n().0,
                             rlwe_q,
                         );
+                        println!("[PERF_DETAIL] Self-leader m_poly generation for lwe_index {} took {:?}", lwe_index, m_poly_start.elapsed());
 
+                        let row_processing_start = std::time::Instant::now();
                         izip!(ni_rgsw_cts.iter_rows_mut(), gadget_vec.iter()).for_each(
                             |(out, beta)| {
                                 // sample a_i
@@ -1872,11 +1915,14 @@ where
                                 rlwe_modop.elwise_add_mut(out.as_mut(), scratch.as_ref());
                             },
                         );
+                        println!("[PERF_DETAIL] Self-leader row processing for lwe_index {} took {:?}", lwe_index, row_processing_start.elapsed());
 
+                        println!("[PERF_DETAIL] Self-leader RGSW for lwe_index {} took {:?}", lwe_index, lwe_index_start.elapsed());
                         ni_rgsw_cts
                     })
                     .collect_vec()
             };
+            println!("[PERF_DETAIL] All self-leader RGSW ciphertexts took {:?}", self_leader_start.elapsed());
 
             let not_self_leader_rgsw_cts = {
                 let max_rgsw_x_rgsw_decomposer =
