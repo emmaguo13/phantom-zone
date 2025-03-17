@@ -846,15 +846,14 @@ fn e2e<O: Ops>(param: Param) {
 
     // todo(emma): implement helper functions for fhe eval here
 
-    // FHE evaluation.
-    // Cosine similarity calculation.
-    fn function<E: BoolEvaluator>(
+    fn function1<E: BoolEvaluator>(
         a: &[FheU32<E>],
         b: &[FheU32<E>],
-    ) -> FheU32<E> {
+    ) -> (FheU32<E>, FheU32<E>, FheU32<E>) {
 
         assert!(a.len() == b.len());
 
+        // Calculating dot product
         let mut products = Vec::with_capacity(a.len());
         for i in 0..a.len() {
             products.push(&a[i] * &b[i]);
@@ -866,12 +865,66 @@ fn e2e<O: Ops>(param: Param) {
         }
 
         // Square the dot product
+        let squared_dot_product = dot_product.wrapping_mul(&dot_product);
+
+        // Calculating squared norms
+        // Calculate a norm squared
+        let mut a_squared = Vec::with_capacity(a.len());
+        for i in 0..a.len() {
+            a_squared.push(&a[i] * &a[i]);
+        }
+
+        let mut a_norm_squared = a_squared[0].clone();
+        for i in 1..a_squared.len() {
+            // Add squared terms one by one
+            a_norm_squared = &a_norm_squared + &a_squared[i];
+        }
+
+        // Calculate b norm squared
+        let mut b_squared = Vec::with_capacity(b.len());
+        for i in 0..b.len() {
+            b_squared.push(&b[i] * &b[i]);
+        }
+
+        let mut b_norm_squared = b_squared[0].clone();
+        for i in 1..b_squared.len() {
+            // Add squared terms one by one
+            b_norm_squared = &b_norm_squared + &b_squared[i];
+        }
+
+        (squared_dot_product, a_norm_squared, b_norm_squared)
+    }
+
+    // FHE evaluation.
+    // Cosine similarity calculation.
+    // Returns the squared dot product of a and b, a norm squared, and b norm squared.
+    fn function<E: BoolEvaluator>(
+        a: &[FheU32<E>],
+        b: &[FheU32<E>],
+    ) -> FheU32<E> {
+
+        assert!(a.len() == b.len());
+
+        let mut products = Vec::with_capacity(a.len());
+        for i in 0..a.len() {
+            println!("Multiplying a and b at index {}", i);
+            products.push(&a[i] * &b[i]);
+        }
+
+        let mut dot_product = products[0].clone();
+        for i in 1..products.len() {
+            println!("Adding product at index {}", i);
+            dot_product = &dot_product + &products[i];
+        }
+
+        // Square the dot product
+        println!("Squaring dot product");
         dot_product.wrapping_mul(&dot_product)
     }
     // Generate plaintext messages
     let ms: [Vec<u32>; 2] = {
         let mut rng = StdRng::from_entropy();
-        let n = 284;
+        let n = 3;
         from_fn(|_| (0..n).map(|_| rng.gen()).collect())
     };
 
