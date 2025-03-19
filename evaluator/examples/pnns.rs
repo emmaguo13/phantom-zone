@@ -522,13 +522,13 @@ pub mod pz {
             bs_key_share
         }
 
-        pub fn encrypt_uint32_vector(
+        pub fn encrypt_uint8_vector(
             &self,
-            values: &[u32],
+            values: &[u8],
         ) -> Vec<FhewBoolBatchedCiphertextOwned<Elem<O::Ring>>> {
             values.iter().map(|&val| {
-                // Encrypt each bit of the uint32 (little-endian format)
-                let bool_m = (0..32).map(|i| ((val >> i) & 1) == 1).collect_vec();
+                // Encrypt each bit of the uint8 (little-endian format)
+                let bool_m = (0..8).map(|i| ((val >> i) & 1) == 1).collect_vec();
                 self.batched_pk_encrypt(bool_m)
             }).collect()
         }
@@ -844,7 +844,7 @@ fn e2e<O: Ops>(param: Param) {
         )
     );
 
-    fn parallel_sum<E: BoolEvaluator>(values: Vec<FheU32<E>>) -> FheU32<E> {
+    fn parallel_sum<E: BoolEvaluator>(values: Vec<FheU8<E>>) -> FheU8<E> {
         use rayon::prelude::*;
         
         // Early return for empty or single-element vectors
@@ -905,9 +905,9 @@ fn e2e<O: Ops>(param: Param) {
     // Cosine similarity^2 calculation.
     // Returns the dot product of a and b, a norm squared, and b norm squared.
     fn function<E: BoolEvaluator>(
-        a: &[FheU32<E>],
-        b: &[FheU32<E>],
-    ) -> (FheU32<E>, FheU32<E>, FheU32<E>) {
+        a: &[FheU8<E>],
+        b: &[FheU8<E>],
+    ) -> (FheU8<E>, FheU8<E>, FheU8<E>, FheU8<E>, FheU8<E>) {
         assert!(a.len() == b.len());
 
         let products: Vec<_> = (0..a.len()).into_par_iter().with_min_len(1.max(a.len() / 16))
@@ -920,39 +920,42 @@ fn e2e<O: Ops>(param: Param) {
         let a_squares:Vec<_> = (0..a.len()).into_par_iter().with_min_len(1.max(a.len() / 16)).map(|i| a[i].wrapping_mul(&a[i])).collect();
         let b_squares:Vec<_> = (0..b.len()).into_par_iter().with_min_len(1.max(b.len() / 16)).map(|i| b[i].wrapping_mul(&b[i])).collect();
         
-        let mut a_norm_squared = parallel_sum(a_squares);
-        let mut b_norm_squared = parallel_sum(b_squares);
+        let a_norm_squared = parallel_sum(a_squares);
+        let b_norm_squared = parallel_sum(b_squares);
+
+        let a_sum = parallel_sum(a.to_vec());
+        let b_sum = parallel_sum(b.to_vec());
         
-        (dot_product, a_norm_squared, b_norm_squared)
+        (dot_product, a_norm_squared, b_norm_squared, a_sum, b_sum)
     }
     // Generate plaintext messages
-    let ms: [Vec<u32>; 2] = {
+    let ms: [Vec<u8>; 2] = {
         let mut rng = StdRng::from_entropy();
-        let n = 32;
+        let n = 8;
         from_fn(|_| (0..n).map(|_| rng.gen()).collect())
     };
 
     // todo(emma)
-    fn u32_to_fhe_bool_vec(byte: u32) -> [FheBool<MockBoolEvaluator>; 32] {
+    fn u8_to_fhe_bool_vec(byte: u8) -> [FheBool<MockBoolEvaluator>;8] {
         // let help = (byte >> 0) & 1 == 1;
         // let help_fhe: FheBool<MockBoolEvaluator> = help.into();
-        (0..32).map(|i| (((byte >> i) & 1) == 1).into()).collect_vec().try_into().unwrap()
+        (0..8).map(|i| (((byte >> i) & 1) == 1).into()).collect_vec().try_into().unwrap()
     }
 
     // Get three outputs from the mock FHE function
-    let (out_dot_product, out_a_norm_squared, out_b_norm_squared) = {
+    let (out_dot_product, out_a_norm_squared, out_b_norm_squared, out_a_sum, out_b_sum) = {
         let [a, b] = &ms
             .clone()
-            .map(|m| m.into_iter().map(|byte| FheU32::new(u32_to_fhe_bool_vec(byte))).collect_vec());
+            .map(|m| m.into_iter().map(|byte| FheU8::new(u8_to_fhe_bool_vec(byte))).collect_vec());
 
-        let (dot_product, a_norm_squared, b_norm_squared) = function::<MockBoolEvaluator>(a, b);
-        (dot_product.into_cts(), a_norm_squared.into_cts(), b_norm_squared.into_cts())
+        let (dot_product, a_norm_squared, b_norm_squared, a_sum, b_sum) = function::<MockBoolEvaluator>(a, b);
+        (dot_product.into_cts(), a_norm_squared.into_cts(), b_norm_squared.into_cts(), a_sum.into_cts(), b_sum.into_cts())
     };
 
     let run = |server: &Server<O>, clients: &[Client<O>]| {
         let cts = timed!("client: batched encrypt inputs", {
             from_fn(|i| {
-                let encrypted_values = clients[i].encrypt_uint32_vector(&ms[i]);
+                let encrypted_values = clients[i].encrypt_uint8_vector(&ms[i]);
                 encrypted_values.into_iter()
                     .map(|ct| clients[i].serialize_batched_ct(&ct).unwrap())
                     .collect_vec()
@@ -960,33 +963,34 @@ fn e2e<O: Ops>(param: Param) {
         });
 
         // Get three outputs from the FHE function
-        let (ct_out_dot_product, ct_out_a_norm_squared, ct_out_b_norm_squared) = timed!("server: perform FHE evaluation on inputs parallelly", {
+        let (ct_out_dot_product, ct_out_a_norm_squared, ct_out_b_norm_squared, ct_out_a_sum, ct_out_b_sum) = timed!("server: perform FHE evaluation on inputs parallelly", {
             let [a, b] = &cts.map(|bytes_array| {
                 bytes_array.into_iter()
                     .map(|byte| {
-                        // Convert an array of encrypted bits into a FheU32.
+                        // Convert an array of encrypted bits into a FheU8.
                         let ct_byte = server.deserialize_batched_ct(&byte).unwrap();
                         let ct_byte_wrapped = server.wrap_batched_ct(&ct_byte);
 
-                        // Convert Vec<FheBool> to [FheBool; 32] for FheU32
+                        // Convert Vec<FheBool> to [FheBool; 8] for FheU8
                         let ct_byte_array = core::array::from_fn(|i| ct_byte_wrapped[i].clone());
-                        FheU32::new(ct_byte_array)
+                        FheU8::new(ct_byte_array)
                     })
                     .collect_vec()
             });
 
-            let (dot_product, a_norm_squared, b_norm_squared) = function(a, b);
+            let (dot_product, a_norm_squared, b_norm_squared, a_sum, b_sum) = function(a, b);
 
-            (dot_product.into_cts(), a_norm_squared.into_cts(), b_norm_squared.into_cts())
+            (dot_product.into_cts(), a_norm_squared.into_cts(), b_norm_squared.into_cts(), a_sum.into_cts(), b_sum.into_cts())
         });
 
         // With ring packing.
-        // todo(emma): get rid of this, this is going in the helper function.
-        let (rp_ct_out_dot_product, rp_ct_out_a_norm_squared, rp_ct_out_b_norm_squared) = timed!(
+        let (rp_ct_out_dot_product, rp_ct_out_a_norm_squared, rp_ct_out_b_norm_squared, rp_ct_out_a_sum, rp_ct_out_b_sum) = timed!(
             "server: perform ring packing on output",
             (server.serialize_rp_ct(&server.pack(&ct_out_dot_product)).unwrap(),
             server.serialize_rp_ct(&server.pack(&ct_out_a_norm_squared)).unwrap(),
-            server.serialize_rp_ct(&server.pack(&ct_out_b_norm_squared)).unwrap())
+            server.serialize_rp_ct(&server.pack(&ct_out_b_norm_squared)).unwrap(),
+            server.serialize_rp_ct(&server.pack(&ct_out_a_sum)).unwrap(),
+            server.serialize_rp_ct(&server.pack(&ct_out_b_sum)).unwrap())
         );
 
         // Get ring packing decryption shares from output ciphertexts. 
@@ -1005,9 +1009,11 @@ fn e2e<O: Ops>(param: Param) {
         let rp_ct_out_dec_shares_dot_product = get_ring_packing_dec_shares::<O>(clients, &rp_ct_out_dot_product);
         let rp_ct_out_dec_shares_a_norm_squared = get_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_norm_squared);
         let rp_ct_out_dec_shares_b_norm_squared = get_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_norm_squared);
+        let rp_ct_out_dec_shares_a_sum = get_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_sum);
+        let rp_ct_out_dec_shares_b_sum = get_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_sum);
 
         // Aggregate ring packing decryption shares.
-        fn aggregate_ring_packing_dec_shares<O: Ops>(clients: &[Client<O>], rp_ct_out: &Vec<u8>, rp_ct_out_dec_shares: &Vec<Vec<u8>>, out: &[bool; 32]) {
+        fn aggregate_ring_packing_dec_shares<O: Ops>(clients: &[Client<O>], rp_ct_out: &Vec<u8>, rp_ct_out_dec_shares: &Vec<Vec<u8>>, out: &[bool; 8]) {
             timed!("anyone: aggregate ring packing decryption shares", {assert_eq!(
                 out.to_vec(),
                 clients[0].aggregate_rp_decryption_shares(
@@ -1023,6 +1029,8 @@ fn e2e<O: Ops>(param: Param) {
         aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_dot_product, &rp_ct_out_dec_shares_dot_product, &out_dot_product);
         aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_norm_squared, &rp_ct_out_dec_shares_a_norm_squared, &out_a_norm_squared);
         aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_norm_squared, &rp_ct_out_dec_shares_b_norm_squared, &out_b_norm_squared);
+        aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_sum, &rp_ct_out_dec_shares_a_sum, &out_a_sum);
+        aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_sum, &rp_ct_out_dec_shares_b_sum, &out_b_sum);
 
         // Without ring packing.
 
@@ -1035,6 +1043,14 @@ fn e2e<O: Ops>(param: Param) {
             .map(|ct| server.serialize_ct(ct).unwrap())
             .collect_vec();
         let ct_out_b_norm_squared = ct_out_b_norm_squared
+            .iter()
+            .map(|ct| server.serialize_ct(ct).unwrap())
+            .collect_vec();
+        let ct_out_a_sum = ct_out_a_sum
+            .iter()
+            .map(|ct| server.serialize_ct(ct).unwrap())
+            .collect_vec();
+        let ct_out_b_sum = ct_out_b_sum
             .iter()
             .map(|ct| server.serialize_ct(ct).unwrap())
             .collect_vec();
@@ -1057,8 +1073,10 @@ fn e2e<O: Ops>(param: Param) {
         let ct_out_dec_shares_dot_product = get_dec_shares::<O>(clients, &ct_out_dot_product);
         let ct_out_dec_shares_a_norm_squared = get_dec_shares::<O>(clients, &ct_out_a_norm_squared);
         let ct_out_dec_shares_b_norm_squared = get_dec_shares::<O>(clients, &ct_out_b_norm_squared);
+        let ct_out_dec_shares_a_sum = get_dec_shares::<O>(clients, &ct_out_a_sum);
+        let ct_out_dec_shares_b_sum = get_dec_shares::<O>(clients, &ct_out_b_sum);
 
-        fn aggregate_dec_shares<O: Ops>(clients: &[Client<O>], ct_out: &Vec<Vec<u8>>, ct_out_dec_shares: &Vec<Vec<u8>>, out: &[bool; 32]) {
+        fn aggregate_dec_shares<O: Ops>(clients: &[Client<O>], ct_out: &Vec<Vec<u8>>, ct_out_dec_shares: &Vec<Vec<u8>>, out: &[bool; 8]) {
             timed!("anyone: aggregate decryption shares", {
                 assert_eq!(
                     out.to_vec(),
@@ -1087,6 +1105,8 @@ fn e2e<O: Ops>(param: Param) {
         aggregate_dec_shares::<O>(clients, &ct_out_dot_product, &ct_out_dec_shares_dot_product, &out_dot_product);
         aggregate_dec_shares::<O>(clients, &ct_out_a_norm_squared, &ct_out_dec_shares_a_norm_squared, &out_a_norm_squared);
         aggregate_dec_shares::<O>(clients, &ct_out_b_norm_squared, &ct_out_dec_shares_b_norm_squared, &out_b_norm_squared);
+        aggregate_dec_shares::<O>(clients, &ct_out_a_sum, &ct_out_dec_shares_a_sum, &out_a_sum);
+        aggregate_dec_shares::<O>(clients, &ct_out_b_sum, &ct_out_dec_shares_b_sum, &out_b_sum);
     };
 
     run(&server, &clients);
