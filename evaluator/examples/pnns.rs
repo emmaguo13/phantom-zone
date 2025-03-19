@@ -10,6 +10,9 @@ use phantom_zone_evaluator::boolean::{
 use pz::*;
 use rand::{rngs::StdRng, Rng, SeedableRng};
 use rayon::prelude::*;
+use rust_bert::pipelines::sentence_embeddings::{
+    SentenceEmbeddingsBuilder, SentenceEmbeddingsModelType,
+};
 
 #[allow(clippy::type_complexity)]
 pub mod pz {
@@ -456,7 +459,7 @@ pub mod pz {
             self.seed
         }
 
-        pub fn sk(&self) -> RlweSecretKeyOwned<i64> {
+        pub fn sk(&self) -> RlweSecretKeyOwned<i32> {
             RlweSecretKey::sample(
                 self.param.ring_size,
                 self.param.sk_distribution,
@@ -464,7 +467,7 @@ pub mod pz {
             )
         }
 
-        pub fn sk_ks(&self) -> LweSecretKeyOwned<i64> {
+        pub fn sk_ks(&self) -> LweSecretKeyOwned<i32> {
             LweSecretKey::sample(
                 self.param.lwe_dimension,
                 self.param.lwe_sk_distribution,
@@ -759,7 +762,7 @@ macro_rules! timed {
         let out = $code;
         println!(
             "{:>6.3?}s",
-            start.elapsed().as_nanos() as f64 / 1000000000.0
+            start.elapsed().as_nanos() as f32 / 1000000000.0
         );
         out
     }};
@@ -855,7 +858,7 @@ fn e2e<O: Ops>(param: Param) {
         }
         
         // For a 16 vCPU machine, aim for 16 chunks
-        let target_chunks = 16;
+        let target_chunks = 24;
         let chunk_size = (values.len() + target_chunks - 1) / target_chunks;
         
         // First level: Split into ~16 chunks and sum each chunk
@@ -910,15 +913,15 @@ fn e2e<O: Ops>(param: Param) {
     ) -> (FheU8<E>, FheU8<E>, FheU8<E>, FheU8<E>, FheU8<E>) {
         assert!(a.len() == b.len());
 
-        let products: Vec<_> = (0..a.len()).into_par_iter().with_min_len(1.max(a.len() / 16))
+        let products: Vec<_> = (0..a.len()).into_par_iter().with_min_len(1.max(a.len() /24))
             .map(|i| {
                 a[i].wrapping_mul(&b[i])
             })
             .collect();
 
         let dot_product = parallel_sum(products);
-        let a_squares:Vec<_> = (0..a.len()).into_par_iter().with_min_len(1.max(a.len() / 16)).map(|i| a[i].wrapping_mul(&a[i])).collect();
-        let b_squares:Vec<_> = (0..b.len()).into_par_iter().with_min_len(1.max(b.len() / 16)).map(|i| b[i].wrapping_mul(&b[i])).collect();
+        let a_squares:Vec<_> = (0..a.len()).into_par_iter().with_min_len(1.max(a.len() / 24)).map(|i| a[i].wrapping_mul(&a[i])).collect();
+        let b_squares:Vec<_> = (0..b.len()).into_par_iter().with_min_len(1.max(b.len() / 24)).map(|i| b[i].wrapping_mul(&b[i])).collect();
         
         let a_norm_squared = parallel_sum(a_squares);
         let b_norm_squared = parallel_sum(b_squares);
@@ -928,12 +931,43 @@ fn e2e<O: Ops>(param: Param) {
         
         (dot_product, a_norm_squared, b_norm_squared, a_sum, b_sum)
     }
+
+    fn generate_quantized_truncated_embedding(text1: &str) -> (Vec<u8>, f32) {
+        std::env::set_var("RUSTBERT_CACHE", "/tmp/rustbert_cache");
+
+        let model = SentenceEmbeddingsBuilder::remote(SentenceEmbeddingsModelType::AllMiniLmL6V2)
+        .create_model().unwrap();
+        let embeddings = model.encode(&[text1]).unwrap();
+        let embeddings1 = embeddings[0].clone();
+
+        // Find the maximum absolute value without using abs()
+        let max_value = embeddings1.iter().map(|&x| x).max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+        let min_value = embeddings1.iter().map(|&x| x).min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap_or(0.0);
+        let abs_max = max_value.max(-min_value);
+        let scale = 8.0/abs_max;
+        
+        let quantized: Vec<u8> = embeddings1.iter().map(|x| (x * scale) as u8 + 8).collect();
+        println!("Quantized: {:?}", quantized);
+
+        let truncated = (0..120).map(|x| quantized[x] as u8).collect();
+
+        (truncated, scale)
+    }
+
+    let report1 = "The quarterly workplace reporting system allows managers to track employee performance metrics and generate comprehensive analytics for leadership review.";
+    let report2 = "Management can monitor staff productivity indicators and create detailed reports for executive teams using the quarterly workplace reporting platform.";
+
+    let (quantized_report1, scale1) = generate_quantized_truncated_embedding(report1);
+    let (quantized_report2, scale2) = generate_quantized_truncated_embedding(report2);
+
     // Generate plaintext messages
-    let ms: [Vec<u8>; 2] = {
-        let mut rng = StdRng::from_entropy();
-        let n = 124;
-        from_fn(|_| (0..n).map(|_| rng.gen()).collect())
-    };
+    // let ms: [Vec<u8>; 2] = {
+    //     let mut rng = StdRng::from_entropy();
+    //     let n = 124;
+    //     from_fn(|_| (0..n).map(|_| rng.gen()).collect())
+    // };
+
+    let ms = [quantized_report1, quantized_report2];
 
     // todo(emma)
     fn u8_to_fhe_bool_vec(byte: u8) -> [FheBool<MockBoolEvaluator>;8] {
@@ -951,6 +985,22 @@ fn e2e<O: Ops>(param: Param) {
         let (dot_product, a_norm_squared, b_norm_squared, a_sum, b_sum) = function::<MockBoolEvaluator>(a, b);
         (dot_product.into_cts(), a_norm_squared.into_cts(), b_norm_squared.into_cts(), a_sum.into_cts(), b_sum.into_cts())
     };
+
+    fn bool_vec_to_uint8(bits: &[bool; 8]) -> i32 {
+        let mut int_result = 0;
+        for (i, &bit) in bits.iter().enumerate() {
+            if bit {
+                int_result |= 1 << i;
+            }
+        }
+        int_result
+    }
+
+    print!("Dot product: {}", bool_vec_to_uint8(&out_dot_product));
+    print!("A norm squared: {}", bool_vec_to_uint8(&out_a_norm_squared));
+    print!("B norm squared: {}", bool_vec_to_uint8(&out_b_norm_squared));
+    print!("A sum: {}", bool_vec_to_uint8(&out_a_sum));
+    print!("B sum: {}", bool_vec_to_uint8(&out_b_sum));
 
     let run = |server: &Server<O>, clients: &[Client<O>]| {
         let cts = timed!("client: batched encrypt inputs", {
@@ -1013,24 +1063,61 @@ fn e2e<O: Ops>(param: Param) {
         let rp_ct_out_dec_shares_b_sum = get_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_sum);
 
         // Aggregate ring packing decryption shares.
-        fn aggregate_ring_packing_dec_shares<O: Ops>(clients: &[Client<O>], rp_ct_out: &Vec<u8>, rp_ct_out_dec_shares: &Vec<Vec<u8>>, out: &[bool; 8]) {
-            timed!("anyone: aggregate ring packing decryption shares", {assert_eq!(
+        fn aggregate_ring_packing_dec_shares<O: Ops>(clients: &[Client<O>], rp_ct_out: &Vec<u8>, rp_ct_out_dec_shares: &Vec<Vec<u8>>, out: &[bool; 8]) -> i32 {
+            let aggregated_result = timed!("clients: aggregate ring packing decryption shares", clients[0].aggregate_rp_decryption_shares(
+                &clients[0].deserialize_rp_ct(&rp_ct_out).unwrap(),
+                &rp_ct_out_dec_shares
+                    .iter()
+                    .map(|dec_share| clients[0].deserialize_rp_dec_share(dec_share).unwrap())
+                    .collect_vec(),
+            ));
+            assert_eq!(
                 out.to_vec(),
-                clients[0].aggregate_rp_decryption_shares(
-                    &clients[0].deserialize_rp_ct(&rp_ct_out).unwrap(),
-                    &rp_ct_out_dec_shares
-                        .iter()
-                        .map(|dec_share| clients[0].deserialize_rp_dec_share(dec_share).unwrap())
-                        .collect_vec(),
-                )
-            )});
+                aggregated_result
+            );
+            let mut int_result: i32 = 0;
+            for (i, &bit) in aggregated_result.iter().enumerate() {
+                if bit {
+                    int_result |= 1 << i;
+                }
+            }
+            
+            int_result
         }
 
-        aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_dot_product, &rp_ct_out_dec_shares_dot_product, &out_dot_product);
-        aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_norm_squared, &rp_ct_out_dec_shares_a_norm_squared, &out_a_norm_squared);
-        aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_norm_squared, &rp_ct_out_dec_shares_b_norm_squared, &out_b_norm_squared);
-        aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_sum, &rp_ct_out_dec_shares_a_sum, &out_a_sum);
-        aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_sum, &rp_ct_out_dec_shares_b_sum, &out_b_sum);
+        let dot_product = aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_dot_product, &rp_ct_out_dec_shares_dot_product, &out_dot_product);
+        let a_norm_squared = aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_norm_squared, &rp_ct_out_dec_shares_a_norm_squared, &out_a_norm_squared);
+        let b_norm_squared = aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_norm_squared, &rp_ct_out_dec_shares_b_norm_squared, &out_b_norm_squared);
+        let a_sum = aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_a_sum, &rp_ct_out_dec_shares_a_sum, &out_a_sum);
+        let b_sum = aggregate_ring_packing_dec_shares::<O>(clients, &rp_ct_out_b_sum, &rp_ct_out_dec_shares_b_sum, &out_b_sum);
+
+        println!("Dot product: {}", dot_product);
+        println!("A norm squared: {}", a_norm_squared);
+        println!("B norm squared: {}", b_norm_squared);
+        println!("A sum: {}", a_sum);
+        println!("B sum: {}", b_sum);
+
+        // Dequantize the results
+        fn dequantize_dot_product(quant_dot: i32, quant_sum1: i32, quant_sum2: i32, scale1: f32, scale2: f32, n: i32) -> f32 {
+            (1.0 / (scale1 * scale2)) * ((quant_dot as f32) - 8.0 * (quant_sum2 as f32) - 8.0 * (quant_sum1 as f32) + 8.0 * 8.0 * (n as f32))
+        }
+        
+        fn dequantize_norm(quant_norm_sq: i32, quant_sum: i32, scale: f32, n: i32) -> f32 {
+            (1.0 / (scale * scale)) * ((quant_norm_sq as f32) - 2.0 * 8.0 * (quant_sum as f32) + 8.0 * 8.0 * (n as f32))
+        }
+        
+        fn calculate_cosine_similarity(dot: f32, norm_sq1: f32, norm_sq2: f32) -> f32 {
+            dot / (norm_sq1.sqrt() * norm_sq2.sqrt())
+        }
+
+        // Calculate the actual cosine similarity
+        let n = 120; // Number of dimensions in the embedding
+        let dequantized_dot = dequantize_dot_product(dot_product, a_sum, b_sum, scale1, scale2, n as i32);
+        let dequantized_norm1 = dequantize_norm(a_norm_squared, a_sum, scale1, n as i32);
+        let dequantized_norm2 = dequantize_norm(b_norm_squared, b_sum, scale2, n as i32);
+        let similarity = calculate_cosine_similarity(dequantized_dot, dequantized_norm1, dequantized_norm2);
+
+        println!("Cosine similarity between embeddings: {}", similarity);
 
         // Without ring packing.
 
@@ -1108,6 +1195,8 @@ fn e2e<O: Ops>(param: Param) {
         aggregate_dec_shares::<O>(clients, &ct_out_a_sum, &ct_out_dec_shares_a_sum, &out_a_sum);
         aggregate_dec_shares::<O>(clients, &ct_out_b_sum, &ct_out_dec_shares_b_sum, &out_b_sum);
     };
+
+
 
     run(&server, &clients);
 

@@ -33,6 +33,9 @@ num-traits = { workspace = true }
 rayon = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 
+# embeddings stuff
+rust-bert = { workspace = true }
+
 [features]
 default = []
 serde = ["dep:serde", "phantom-zone-crypto/serde"]
