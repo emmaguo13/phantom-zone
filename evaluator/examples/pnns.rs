@@ -931,7 +931,7 @@ fn e2e<O: Ops>(param: Param) {
     // Generate plaintext messages
     let ms: [Vec<u8>; 2] = {
         let mut rng = StdRng::from_entropy();
-        let n = 8;
+        let n = 124;
         from_fn(|_| (0..n).map(|_| rng.gen()).collect())
     };
 
